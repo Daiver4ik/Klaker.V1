@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "settings": {
+    "monitor_enabled": true,
+    "monitor_device": null,
+    "mic_enabled": true,
+    "mic_device": "CABLE In 16 Ch (VB-Audio Virtual Cable)",
+    "passthrough_enabled": true,
+    "input_device": "Microphone (Realtek(R) Audio)",
+    "master_volume": 1.0,
+    "monitor_volume": 1.0,
+    "input_volume": 1.0,
+    "allow_overlap": false,
+    "stop_all_hotkey": "down",
+    "close_to_tray": false,
+    "samplerate": 48000
+  },
+  "sounds": []
+}
