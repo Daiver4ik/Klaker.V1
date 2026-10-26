@@ -737,7 +737,7 @@ class SettingsDialog(QDialog):
         form.addRow("Устройство:", self.monitor_combo)
 
         # Виртуальный микрофон
-        self.mic_check = QCheckBox("Отправлять звуки в «микрофон» (виртуальный кабель)")
+        self.mic_check = QCheckBox(""Отправлять звук в микрофон через VB-Cable. Обязательно выберать его!")
         self.mic_check.setChecked(settings.mic_enabled)
         self.mic_combo = QComboBox()
         self._fill(self.mic_combo, outputs, settings.mic_device)
