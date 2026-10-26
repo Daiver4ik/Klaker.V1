@@ -1,209 +1,29 @@
-"""Кастомные элементы интерфейса: кнопка записи хоткея, строка звука, диалог настроек."""
+"""
+The "Klaler" project, an analogue of the SoundPad application!
+Author: Daiver4ik
+Description: Copyright protected!
+"""
+
 from __future__ import annotations
 
 import os
-import tempfile
-from pathlib import Path
-from string import Template
 from typing import Optional
 
-from PySide6.QtCore import QPointF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QPolygonF
+import numpy as np
+from PySide6.QtCore import QEasingCurve, QObject, QPoint, QPointF, QRectF, QSize, Qt, QUrl, QVariantAnimation, Signal
+from PySide6.QtGui import QActionGroup, QColor, QDesktopServices, QPainter, QPen, QTextOption
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QGroupBox,
-    QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSlider, QVBoxLayout, QWidget,
+    QAbstractButton, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
+    QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QSlider, QToolButton, QVBoxLayout, QWidget,
 )
 
 from core.audio_engine import DeviceInfo
-from core.config_manager import Settings, SoundItem
+from core.config_manager import Category, Settings, SoundItem
 from core.hotkey_manager import HotkeyManager, format_hotkey
-
-# ------------------------------------------------------------------ палитра
-# Графит с холодным оттенком; акцент — «сигнальный» васильково-фиолетовый,
-# зелёный зарезервирован только за состоянием «звук играет».
-P = {
-    "base": "#111318",
-    "panel": "#1a1d24",
-    "raised": "#232730",
-    "border": "#2a2e38",
-    "border_hi": "#3a3f4b",
-    "text": "#e7e9ee",
-    "muted": "#8a91a0",
-    "dim": "#5a6070",
-    "accent": "#7b8cff",
-    "accent_hi": "#93a1ff",
-    "accent_soft": "#212745",
-    "live": "#3dd68c",
-    "live_soft": "#15261f",
-    "danger": "#f06a65",
-    "warn": "#f2b24c",
-}
-
-_QSS = Template("""
-QWidget { color: $text; font-family: "Segoe UI Variable", "Segoe UI", "Inter", "SF Pro Text", "Noto Sans", sans-serif; font-size: 13px; }
-QMainWindow, QDialog { background: $base; }
-QLabel { background: transparent; }
-QScrollArea { background: transparent; border: 1.5px solid transparent; border-radius: 12px; }
-QScrollArea[dragging="true"] { border: 1.5px dashed $accent; background: $accent_soft; }
-QScrollArea > QWidget > QWidget { background: transparent; }
-
-QLabel#appTitle { font-size: 20px; font-weight: 700; padding-right: 8px; }
-QLabel#hint, QLabel#mixerLabel { color: $muted; }
-QLabel#valueLabel { color: $muted; }
-QLabel#valueLabel[boost="true"] { color: $warn; }
-QLabel#metaLabel { color: $dim; font-size: 12px; }
-QLabel#metaLabel[missing="true"] { color: $warn; }
-QLabel#soundName { font-size: 14px; font-weight: 600; }
-QLabel#hintBox { background: $panel; border: 1px solid $border; border-left: 3px solid $accent; border-radius: 8px; padding: 10px 12px; color: $muted; }
-
-QFrame#emptyState { border: 1.5px dashed $border_hi; border-radius: 14px; background: transparent; }
-QFrame#emptyState QLabel#emptyTitle { font-size: 16px; font-weight: 600; }
-QFrame#emptyState QLabel#emptyHint { color: $muted; }
-QFrame#mixer { background: $panel; border: 1px solid $border; border-radius: 10px; }
-
-QFrame#soundRow { background: $panel; border: 1px solid $border; border-left: 3px solid $panel; border-radius: 10px; }
-QFrame#soundRow:hover { border-color: $border_hi; border-left-color: $panel; }
-QFrame#soundRow[playing="true"] { background: $live_soft; border: 1px solid #235a3e; border-left: 3px solid $live; }
-QFrame#soundRow[missing="true"] { border-left: 3px solid $warn; }
-
-QPushButton { background: $raised; border: 1px solid $border_hi; border-radius: 8px; padding: 7px 14px; font-weight: 500; }
-QPushButton:hover { background: #2b303b; border-color: #4a5060; }
-QPushButton:pressed { background: #1f232b; }
-QPushButton:focus { border-color: $accent; }
-QPushButton:disabled { color: $dim; background: $panel; border-color: $border; }
-QPushButton:checked { background: $accent_soft; border-color: $accent; color: $accent_hi; }
-QPushButton#primary { background: $accent; border: 1px solid $accent; color: #0d1020; font-weight: 600; }
-QPushButton#primary:hover { background: $accent_hi; border-color: $accent_hi; }
-QPushButton#primary:pressed { background: #6676ee; }
-QPushButton#ghost { background: transparent; border: 1px solid transparent; padding: 0; }
-QPushButton#ghost:hover { background: $raised; border-color: $border_hi; }
-QPushButton#hotkeysToggle:checked { background: $live_soft; border-color: #235a3e; color: $live; }
-QPushButton#playButton { background: $raised; border: 1px solid $border_hi; border-radius: 19px; padding: 0; }
-QPushButton#playButton:hover { background: $accent_soft; border-color: $accent; }
-QPushButton#playButton[playing="true"] { background: $live; border-color: $live; }
-QPushButton#removeButton { background: transparent; border: none; border-radius: 6px; padding: 0; }
-QPushButton#removeButton:hover { background: #3a2327; }
-QPushButton#hotkeyButton { font-family: "Cascadia Mono", "Consolas", "SF Mono", monospace; font-size: 12px; background: $base; border: 1px solid $border_hi; border-bottom: 2px solid #4a5060; border-radius: 6px; padding: 5px 10px; }
-QPushButton#hotkeyButton[empty="true"] { font-family: "Segoe UI Variable", "Segoe UI", "Inter", sans-serif; font-size: 13px; color: $muted; border: 1px dashed $border_hi; }
-QPushButton#hotkeyButton[recording="true"] { background: $warn; color: #1a1304; border: 1px solid $warn; border-bottom: 2px solid #b8802a; }
-
-QLineEdit, QComboBox { background: $panel; border: 1px solid $border_hi; border-radius: 8px; padding: 6px 10px; selection-background-color: $accent; selection-color: #fff; }
-QLineEdit:focus, QComboBox:focus, QComboBox:on { border-color: $accent; }
-QComboBox:disabled { color: $dim; border-color: $border; }
-QComboBox::drop-down { border: none; width: 24px; subcontrol-origin: padding; subcontrol-position: center right; }
-QComboBox::down-arrow { image: url("$arrow"); width: 14px; height: 14px; }
-QComboBox QAbstractItemView { background: $panel; border: 1px solid $border_hi; padding: 4px; outline: 0; selection-background-color: $accent; selection-color: #fff; }
-
-QCheckBox { spacing: 8px; }
-QCheckBox:disabled { color: $dim; }
-QCheckBox::indicator { width: 16px; height: 16px; border-radius: 5px; border: 1px solid $border_hi; background: $panel; }
-QCheckBox::indicator:hover { border-color: $accent; }
-QCheckBox::indicator:checked { background: $accent; border-color: $accent; image: url("$check"); }
-QCheckBox::indicator:disabled { background: $base; border-color: $border; }
-
-QSlider::groove:horizontal { height: 4px; background: $border_hi; border-radius: 2px; }
-QSlider::sub-page:horizontal { background: $accent; border-radius: 2px; }
-QSlider::handle:horizontal { background: $text; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }
-QSlider::handle:horizontal:hover { background: #ffffff; border: 2px solid $accent; }
-
-QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
-QScrollBar::handle:vertical { background: $border_hi; border-radius: 3px; min-height: 32px; }
-QScrollBar::handle:vertical:hover { background: $dim; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
-
-QGroupBox { border: 1px solid $border; border-radius: 10px; margin-top: 14px; padding: 16px 12px 12px 12px; }
-QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: $muted; font-weight: 600; background: $base; }
-
-QMenu { background: $panel; border: 1px solid $border_hi; border-radius: 8px; padding: 6px; }
-QMenu::item { padding: 6px 24px; border-radius: 5px; }
-QMenu::item:selected { background: $accent_soft; }
-QMenu::separator { height: 1px; background: $border; margin: 6px 4px; }
-
-QStatusBar { color: $muted; border-top: 1px solid $border; }
-QStatusBar::item { border: none; }
-QToolTip { background: $raised; color: $text; border: 1px solid $border_hi; padding: 4px 6px; }
-""")
-
-
-# ------------------------------------------------------------------ иконки
-def make_pixmap(name: str, color: str = P["text"], size: int = 20) -> QPixmap:
-    """Рисует векторную иконку (чётко на любом DPI), чтобы не зависеть от шрифтовых глифов."""
-    ratio = 2
-    pm = QPixmap(size * ratio, size * ratio)
-    pm.setDevicePixelRatio(ratio)
-    pm.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    c = QColor(color)
-    s = float(size)
-    pen = QPen(c, max(1.6, s * 0.1))
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-
-    if name == "play":
-        p.setPen(pen)
-        p.setBrush(c)
-        p.drawPolygon(QPolygonF([QPointF(.34 * s, .22 * s), QPointF(.34 * s, .78 * s), QPointF(.78 * s, .5 * s)]))
-    elif name == "stop":
-        p.setPen(pen)
-        p.setBrush(c)
-        p.drawRoundedRect(.27 * s, .27 * s, .46 * s, .46 * s, 2, 2)
-    elif name == "plus":
-        p.setPen(pen)
-        p.drawLine(QPointF(.5 * s, .22 * s), QPointF(.5 * s, .78 * s))
-        p.drawLine(QPointF(.22 * s, .5 * s), QPointF(.78 * s, .5 * s))
-    elif name == "close":
-        p.setPen(pen)
-        p.drawLine(QPointF(.3 * s, .3 * s), QPointF(.7 * s, .7 * s))
-        p.drawLine(QPointF(.7 * s, .3 * s), QPointF(.3 * s, .7 * s))
-    elif name == "gear":
-        p.setPen(pen)
-        p.drawEllipse(QPointF(s / 2, s / 2), .2 * s, .2 * s)
-        p.translate(s / 2, s / 2)
-        for _ in range(8):
-            p.drawLine(QPointF(0, -.31 * s), QPointF(0, -.43 * s))
-            p.rotate(45)
-    p.end()
-    return pm
-
-
-def make_icon(name: str, color: str = P["text"], size: int = 20) -> QIcon:
-    return QIcon(make_pixmap(name, color, size))
-
-
-def _asset(name: str, draw) -> str:
-    """Маленькие PNG для QSS (галочка, стрелка списка). Кладём во временную папку."""
-    folder = Path(tempfile.gettempdir()) / "Klaker_assets"
-    folder.mkdir(exist_ok=True)
-    path = folder / f"{name}.png"
-    pm = QPixmap(14, 14)
-    pm.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    draw(p)
-    p.end()
-    pm.save(str(path), "PNG")
-    return path.as_posix()
-
-
-def build_style() -> str:
-    """Собирает общий QSS. Вызывать ПОСЛЕ создания QApplication (нужен QPixmap)."""
-    def check(p: QPainter) -> None:
-        pen = QPen(QColor("#0d1020"), 2.0)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        p.setPen(pen)
-        p.drawPolyline(QPolygonF([QPointF(3, 7.5), QPointF(6, 10.5), QPointF(11, 4)]))
-
-    def arrow(p: QPainter) -> None:
-        pen = QPen(QColor(P["muted"]), 1.8)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        p.setPen(pen)
-        p.drawPolyline(QPolygonF([QPointF(3, 5), QPointF(7, 9), QPointF(11, 5)]))
-
-    return _QSS.substitute(P, check=_asset("check", check), arrow=_asset("arrow", arrow))
+from ui.theme import (
+    ACCENT, BG_ROW, BG_ROW_HOVER, BG_SELECTED, DANGER, PALETTE, TEXT, TEXT_MUTED,
+    auto_color, dot_icon, icon, mix, paint_icon, with_alpha,
+)
 
 
 def repolish(widget: QWidget) -> None:
@@ -211,70 +31,175 @@ def repolish(widget: QWidget) -> None:
     widget.style().polish(widget)
 
 
-def tab_focus(*widgets: QWidget) -> None:
-    """Кнопки получают фокус только с клавиатуры — иначе после клика мышью остаётся рамка."""
-    for w in widgets:
-        w.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+def fmt_time(seconds: float, precise: bool = False) -> str:
+    if precise:
+        return f"{seconds:.1f}"
+    m, s = divmod(int(seconds), 60)
+    return f"{m}:{s:02d}"
 
 
-# ------------------------------------------------------------------ виджеты
-class EmptyState(QFrame):
-    """Пустой список / «ничего не найдено»."""
+def _text_option(align: Qt.AlignmentFlag) -> QTextOption:
+    opt = QTextOption(align)
+    opt.setWrapMode(QTextOption.WrapMode.NoWrap)
+    return opt
+
+
+def make_icon_button(name: str, tooltip: str, color: str = TEXT_MUTED, size: int = 30, icon_size: int = 18) -> QToolButton:
+    btn = QToolButton()
+    btn.setIcon(icon(name, color, icon_size))
+    btn.setIconSize(QSize(icon_size, icon_size))
+    btn.setFixedSize(size, size)
+    btn.setToolTip(tooltip)
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    return btn
+
+
+class Fade(QObject):
+    """Плавно меняющееся значение 0..1. Читайте .value в paintEvent, слушайте .changed."""
+
+    changed = Signal()
+
+    def __init__(self, parent: QObject, duration: int = 150, start: float = 0.0) -> None:
+        super().__init__(parent)
+        self.value = start
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(duration)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.valueChanged.connect(self._on_value)
+
+    def to(self, target: float, animate: bool = True) -> None:
+        self._anim.stop()
+        if not animate:
+            self.value = float(target)
+            self.changed.emit()
+            return
+        self._anim.setStartValue(float(self.value))
+        self._anim.setEndValue(float(target))
+        self._anim.start()
+
+    def _on_value(self, v) -> None:
+        self.value = float(v)
+        self.changed.emit()
+
+
+class ElidedLabel(QLabel):
+    """Метка, которая обрезает длинный текст многоточием вместо растягивания строки."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setObjectName("emptyState")
-        self.setMinimumHeight(260)
-        lay = QVBoxLayout(self)
-        lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lay.setSpacing(8)
-        self._icon = QLabel()
-        self._icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._icon.setPixmap(make_pixmap("plus", P["dim"], 40))
-        self._title = QLabel()
-        self._title.setObjectName("emptyTitle")
-        self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._hint = QLabel()
-        self._hint.setObjectName("emptyHint")
-        self._hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        for w in (self._icon, self._title, self._hint):
-            lay.addWidget(w)
+        self._full = ""
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(90)
 
-    def set_content(self, title: str, hint: str, show_icon: bool = True) -> None:
-        self._title.setText(title)
-        self._hint.setText(hint)
-        self._icon.setVisible(show_icon)
+    def set_full_text(self, text: str) -> None:
+        self._full = text
+        self._elide()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self) -> None:
+        super().setText(self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, max(10, self.width())))
 
 
-class LabeledSlider(QWidget):
-    """Подпись + ползунок + значение в процентах. Сигнал отдаёт долю (0.0–1.0+)."""
-
-    valueChanged = Signal(float)
-
-    def __init__(self, title: str, value: float, tip: str = "", parent: Optional[QWidget] = None) -> None:
+class PlayButton(QAbstractButton):
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(10)
-        label = QLabel(title)
-        label.setObjectName("mixerLabel")
-        self.slider = QSlider(Qt.Orientation.Horizontal)
-        self.slider.setRange(0, 100)
-        self.slider.setValue(int(round(value * 100)))
-        self.value_label = QLabel()
-        self.value_label.setObjectName("valueLabel")
-        self.value_label.setFixedWidth(40)
-        self.value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.value_label.setText(f"{self.slider.value()}%")
-        self.slider.valueChanged.connect(self._on_change)
-        self.setToolTip(tip)
-        lay.addWidget(label)
-        lay.addWidget(self.slider, 1)
-        lay.addWidget(self.value_label)
+        self.setFixedSize(40, 40)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._color = QColor(ACCENT)
+        self._is_playing = False
+        self._hover = Fade(self, 120)
+        self._level = Fade(self, 220)
+        self._hover.changed.connect(self.update)
+        self._level.changed.connect(self.update)
 
-    def _on_change(self, v: int) -> None:
-        self.value_label.setText(f"{v}%")
-        self.valueChanged.emit(v / 100.0)
+    def set_color(self, color: str) -> None:
+        self._color = QColor(color)
+        self.update()
+
+    def set_playing(self, playing: bool) -> None:
+        self._is_playing = playing
+        self._level.to(1.0 if playing else 0.0)
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._hover.to(1.0)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._hover.to(0.0)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        h, t = self._hover.value, self._level.value
+        fill = mix(with_alpha(self._color, 0.16 + 0.12 * h), self._color, t)
+        if t > 0:
+            fill = mix(fill, QColor("white"), 0.14 * h * t)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(fill)
+        p.drawEllipse(QRectF(self.rect()).adjusted(1, 1, -1, -1))
+        icon_color = mix(self._color, QColor("white"), t)
+        paint_icon(p, "stop" if self._is_playing else "play", QRectF(self.rect()).adjusted(8, 8, -8, -8), icon_color)
+
+
+class WaveformWidget(QWidget):
+    BAR, GAP = 3, 2
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setFixedHeight(34)
+        self.setMinimumWidth(100)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._peaks: Optional[np.ndarray] = None
+        self._color = QColor(ACCENT)
+        self._progress: Optional[float] = None
+        self._cache_n = -1
+        self._cache: list[float] = []
+
+    def set_peaks(self, peaks: Optional[np.ndarray]) -> None:
+        self._peaks = peaks
+        self._cache_n = -1
+        self.update()
+
+    def set_color(self, color: str) -> None:
+        self._color = QColor(color)
+        self.update()
+
+    def set_progress(self, fraction: Optional[float]) -> None:
+        if fraction is not None:
+            fraction = max(0.0, min(1.0, fraction))
+        if fraction == self._progress:
+            return
+        self._progress = fraction
+        self.update()
+
+    def _bars(self, n: int) -> Optional[list[float]]:
+        if self._peaks is None or len(self._peaks) == 0:
+            return None
+        if n != self._cache_n:
+            idx = np.linspace(0, len(self._peaks), n + 1).astype(int)
+            self._cache = [float(self._peaks[a:max(b, a + 1)].max()) for a, b in zip(idx[:-1], idx[1:])]
+            self._cache_n = n
+        return self._cache
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        w, h = self.width(), self.height()
+        n = max(1, (w + self.GAP) // (self.BAR + self.GAP))
+        bars = self._bars(n)
+        playing = self._progress is not None
+        played = QColor(self._color)
+        rest = with_alpha(self._color, 0.28 if playing else (0.5 if bars else 0.18))
+        edge = (self._progress or 0.0) * w
+        p.setPen(Qt.PenStyle.NoPen)
+        for i in range(n):
+            x = i * (self.BAR + self.GAP)
+            amp = bars[i] if bars else 0.12
+            bh = max(3.0, amp * (h - 4))
+            p.setBrush(played if playing and x + self.BAR / 2 <= edge else rest)
+            p.drawRoundedRect(QRectF(x, (h - bh) / 2, self.BAR, bh), 1.5, 1.5)
 
 
 class HotkeyButton(QPushButton):
@@ -293,9 +218,7 @@ class HotkeyButton(QPushButton):
         self._hotkey = hotkey
         self._recording = False
         self.setObjectName("hotkeyButton")
-        self.setMinimumWidth(140)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        tab_focus(self)
         self.clicked.connect(self._on_clicked)
         self._captured.connect(self._on_captured)
         self._refresh()
@@ -312,7 +235,7 @@ class HotkeyButton(QPushButton):
             self.setText("Нажмите клавиши…")
             self.setToolTip("Esc — отмена, Backspace — убрать хоткей")
         else:
-            self.setText(format_hotkey(self._hotkey) or "Назначить")
+            self.setText(format_hotkey(self._hotkey) or "Хоткей")
             self.setToolTip("Клик — записать новую комбинацию")
         self.setProperty("empty", not self._hotkey and not self._recording)
         self.setProperty("recording", self._recording)
@@ -345,143 +268,443 @@ class HotkeyButton(QPushButton):
         super().hideEvent(event)
 
 
-class SoundRow(QFrame):
+class SoundRow(QWidget):
     play_toggled = Signal(str)
     hotkey_changed = Signal(str, str)
     volume_changed = Signal(str, float)
     loop_changed = Signal(str, bool)
     mode_changed = Signal(str, str)
+    color_changed = Signal(str, str)       # "" = сбросить на цвет категории/авто
+    category_changed = Signal(str, str)    # "" = без категории
     rename_requested = Signal(str)
     remove_requested = Signal(str)
 
     MODES = (
-        ("restart", "Рестарт", "Повторное нажатие запускает звук с начала"),
-        ("overlap", "Наложение", "Повторное нажатие запускает ещё одну копию поверх"),
-        ("toggle", "Старт/стоп", "Повторное нажатие останавливает звук"),
+        ("restart", "Рестарт — играть с начала"),
+        ("overlap", "Наложение — ещё одна копия поверх"),
+        ("toggle", "Старт / стоп"),
     )
 
-    def __init__(self, sound: SoundItem, manager: HotkeyManager, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, sound: SoundItem, color: str, categories: list[str], manager: HotkeyManager,
+                 parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setObjectName("soundRow")
+        self.setMinimumHeight(68)
         self.sound_id = sound.id
         self.name = sound.name
         self._path = sound.path
-        self._missing = False
+        self._mode = sound.mode
+        self._category = sound.category
+        self._categories = list(categories)
+        self._color = color
+        self._duration = 0.0
+        self._missing = not os.path.isfile(sound.path)
+        self._hover = Fade(self, 150)
+        self._play = Fade(self, 280)
+        self._hover.changed.connect(self.update)
+        self._play.changed.connect(self.update)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 9, 10, 9)
+        lay.setContentsMargins(20, 10, 10, 10)
         lay.setSpacing(12)
 
-        self.play_btn = QPushButton()
-        self.play_btn.setObjectName("playButton")
-        self.play_btn.setFixedSize(38, 38)
-        self.play_btn.setIconSize(QSize(18, 18))
-        self.play_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.play_btn.setToolTip("Воспроизвести / остановить")
+        self.play_btn = PlayButton()
         self.play_btn.clicked.connect(lambda: self.play_toggled.emit(self.sound_id))
         lay.addWidget(self.play_btn)
 
-        # Название + имя файла вторым рядом
         text_col = QVBoxLayout()
         text_col.setSpacing(1)
-        self.name_label = QLabel()
+        self.name_label = ElidedLabel()
         self.name_label.setObjectName("soundName")
-        self.meta_label = QLabel()
-        self.meta_label.setObjectName("metaLabel")
-        for lbl in (self.name_label, self.meta_label):
-            lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-            text_col.addWidget(lbl)
-        lay.addLayout(text_col, 1)
+        self.sub_label = ElidedLabel()
+        self.sub_label.setObjectName("muted")
+        text_col.addStretch(1)
+        text_col.addWidget(self.name_label)
+        text_col.addWidget(self.sub_label)
+        text_col.addStretch(1)
+        lay.addLayout(text_col, 3)
 
-        self.mode_combo = QComboBox()
-        self.mode_combo.setFixedWidth(124)
-        for key, label, tip in self.MODES:
-            self.mode_combo.addItem(label, key)
-            self.mode_combo.setItemData(self.mode_combo.count() - 1, tip, Qt.ItemDataRole.ToolTipRole)
-        self.mode_combo.setCurrentIndex(max(0, self.mode_combo.findData(sound.mode)))
-        self.mode_combo.setToolTip("Что делать при повторном нажатии")
-        self.mode_combo.currentIndexChanged.connect(
-            lambda: self.mode_changed.emit(self.sound_id, self.mode_combo.currentData())
-        )
-        lay.addWidget(self.mode_combo)
+        self.wave = WaveformWidget()
+        lay.addWidget(self.wave, 4)
 
-        self.loop_check = QCheckBox("Повтор")
-        self.loop_check.setChecked(sound.loop)
-        self.loop_check.toggled.connect(lambda v: self.loop_changed.emit(self.sound_id, v))
-        lay.addWidget(self.loop_check)
+        self.time_label = QLabel("")
+        self.time_label.setObjectName("muted")
+        self.time_label.setFixedWidth(88)
+        self.time_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(self.time_label)
+
+        self.loop_btn = make_icon_button("loop", "Зациклить звук")
+        self.loop_btn.setCheckable(True)
+        self.loop_btn.setChecked(sound.loop)
+        self.loop_btn.toggled.connect(self._on_loop)
+        lay.addWidget(self.loop_btn)
 
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 200)
         self.volume_slider.setValue(int(round(sound.volume * 100)))
-        self.volume_slider.setFixedWidth(110)
-        self.volume_slider.setToolTip("Громкость этого звука (до 200%)")
-        self.volume_label = QLabel()
-        self.volume_label.setObjectName("valueLabel")
-        self.volume_label.setFixedWidth(42)
-        self.volume_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.volume_slider.setFixedWidth(84)
         self.volume_slider.valueChanged.connect(self._on_volume)
         lay.addWidget(self.volume_slider)
-        lay.addWidget(self.volume_label)
 
         self.hotkey_btn = HotkeyButton(manager, sound.hotkey)
         self.hotkey_btn.hotkey_changed.connect(lambda c: self.hotkey_changed.emit(self.sound_id, c))
         lay.addWidget(self.hotkey_btn)
 
-        remove = QPushButton()
-        remove.setObjectName("removeButton")
-        remove.setFixedSize(28, 28)
-        remove.setIcon(make_icon("close", P["muted"], 14))
-        remove.setIconSize(QSize(14, 14))
-        remove.setCursor(Qt.CursorShape.PointingHandCursor)
-        remove.setToolTip("Удалить из списка (файл не удаляется)")
-        remove.clicked.connect(lambda: self.remove_requested.emit(self.sound_id))
-        lay.addWidget(remove)
+        self.more_btn = make_icon_button("dots", "Ещё")
+        self.more_btn.clicked.connect(lambda: self._show_menu(self.more_btn.mapToGlobal(QPoint(0, self.more_btn.height()))))
+        lay.addWidget(self.more_btn)
 
-        tab_focus(self.play_btn, remove)
-        self.set_name(sound.name, sound.path)
+        self.name_label.set_full_text(sound.name)
+        self.name_label.setToolTip(f"{sound.path}\n(двойной клик — переименовать)")
         self._on_volume(self.volume_slider.value(), emit=False)
-        self.set_missing(not os.path.isfile(sound.path))
-        self.set_playing(False)
+        self._apply_color()
+        self._refresh_sub()
+        self.set_progress(None)
 
-    # -- состояние
-    def set_name(self, name: str, path: str = "") -> None:
+    # ------------------------------------------------------------- состояние
+    def set_name(self, name: str) -> None:
         self.name = name
-        self._path = path or self._path
-        self.name_label.setText(name)
-        self.name_label.setToolTip((self._path or "") + "\n(двойной клик по строке — переименовать)")
-        if not self._missing:
-            self.meta_label.setText(os.path.basename(self._path))
+        self.name_label.set_full_text(name)
 
     def set_hotkey(self, combo: str) -> None:
         self.hotkey_btn.set_hotkey(combo)
 
-    def set_playing(self, playing: bool) -> None:
-        self.play_btn.setIcon(make_icon("stop" if playing else "play", "#0b1f15" if playing else P["text"], 18))
-        for w in (self, self.play_btn):
-            w.setProperty("playing", playing)
-            repolish(w)
+    def set_color(self, color: str) -> None:
+        self._color = color
+        self._apply_color()
+
+    def set_categories(self, names: list[str]) -> None:
+        self._categories = list(names)
+
+    def set_category(self, name: str) -> None:
+        self._category = name
+        self._refresh_sub()
 
     def set_missing(self, missing: bool) -> None:
         self._missing = missing
-        self.setProperty("missing", missing)
-        self.meta_label.setProperty("missing", missing)
-        repolish(self)
-        repolish(self.meta_label)
-        if missing:
-            self.meta_label.setText("Файл не найден — звук не будет воспроизводиться")
-        else:
-            self.meta_label.setText(os.path.basename(self._path))
+        self._refresh_sub()
 
-    # -- события
+    def set_peaks(self, peaks: Optional[np.ndarray], duration: float) -> None:
+        self._duration = duration
+        self.wave.set_peaks(peaks)
+        if self.wave._progress is None:
+            self.time_label.setText(fmt_time(duration, duration < 10) + (" с" if duration < 10 else "") if duration else "")
+
+    def set_playing(self, playing: bool) -> None:
+        self.play_btn.set_playing(playing)
+        self._play.to(1.0 if playing else 0.0)
+        if not playing:
+            self.set_progress(None)
+
+    def set_progress(self, progress: Optional[tuple[float, float]]) -> None:
+        """progress = (позиция_сек, длительность_сек) или None, когда звук не играет."""
+        if progress is None or progress[1] <= 0:
+            self.wave.set_progress(None)
+            d = self._duration
+            self.time_label.setText((fmt_time(d, d < 10) + (" с" if d < 10 else "")) if d else "")
+            return
+        pos, total = progress
+        self.wave.set_progress(pos / total)
+        precise = total < 10
+        self.time_label.setText(f"{fmt_time(pos, precise)} / {fmt_time(total, precise)}" + (" с" if precise else ""))
+
+    def _apply_color(self) -> None:
+        self.play_btn.set_color(self._color)
+        self.wave.set_color(self._color)
+        self._refresh_loop_icon()
+        self.update()
+
+    def _refresh_loop_icon(self) -> None:
+        color = self._color if self.loop_btn.isChecked() else TEXT_MUTED
+        self.loop_btn.setIcon(icon("loop", color, 18))
+
+    def _refresh_sub(self) -> None:
+        if self._missing:
+            self.sub_label.set_full_text("Файл не найден")
+            self.sub_label.setStyleSheet(f"color: {DANGER};")
+            return
+        self.sub_label.setStyleSheet("")
+        parts = []
+        if self._category:
+            parts.append(self._category)
+        ext = os.path.splitext(self._path)[1].lstrip(".").upper()
+        if ext:
+            parts.append(ext)
+        self.sub_label.set_full_text(" · ".join(parts))
+
+    # ---------------------------------------------------------------- события
     def _on_volume(self, value: int, emit: bool = True) -> None:
-        self.volume_label.setText(f"{value}%")
-        self.volume_label.setProperty("boost", value > 100)
-        repolish(self.volume_label)
+        self.volume_slider.setToolTip(f"Громкость: {value}%")
         if emit:
             self.volume_changed.emit(self.sound_id, value / 100.0)
 
+    def _on_loop(self, checked: bool) -> None:
+        self._refresh_loop_icon()
+        self.loop_changed.emit(self.sound_id, checked)
+
+    def _set_mode(self, mode: str) -> None:
+        self._mode = mode
+        self.mode_changed.emit(self.sound_id, mode)
+
+    def _pick_custom_color(self) -> None:
+        chosen = QColorDialog.getColor(QColor(self._color), self, "Цвет звука")
+        if chosen.isValid():
+            self.color_changed.emit(self.sound_id, chosen.name())
+
+    def _reveal(self) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(self._path)))
+
+    def _show_menu(self, pos: QPoint) -> None:
+        menu = QMenu(self)
+
+        mode_menu = menu.addMenu("Повторное нажатие")
+        group = QActionGroup(mode_menu)
+        group.setExclusive(True)
+        for key, label in self.MODES:
+            act = mode_menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(key == self._mode)
+            group.addAction(act)
+            act.triggered.connect(lambda _=False, k=key: self._set_mode(k))
+
+        color_menu = menu.addMenu("Цвет")
+        for name, hex_value in PALETTE:
+            act = color_menu.addAction(dot_icon(hex_value), name)
+            act.triggered.connect(lambda _=False, h=hex_value: self.color_changed.emit(self.sound_id, h))
+        color_menu.addSeparator()
+        color_menu.addAction("Свой цвет…").triggered.connect(lambda _=False: self._pick_custom_color())
+        color_menu.addAction("По умолчанию (как у категории)").triggered.connect(
+            lambda _=False: self.color_changed.emit(self.sound_id, "")
+        )
+
+        cat_menu = menu.addMenu("Категория")
+        none_act = cat_menu.addAction("Без категории")
+        none_act.setCheckable(True)
+        none_act.setChecked(not self._category)
+        none_act.triggered.connect(lambda _=False: self.category_changed.emit(self.sound_id, ""))
+        for name in self._categories:
+            act = cat_menu.addAction(name)
+            act.setCheckable(True)
+            act.setChecked(name == self._category)
+            act.triggered.connect(lambda _=False, n=name: self.category_changed.emit(self.sound_id, n))
+
+        menu.addSeparator()
+        menu.addAction("Переименовать…").triggered.connect(lambda _=False: self.rename_requested.emit(self.sound_id))
+        menu.addAction("Показать файл в папке").triggered.connect(lambda _=False: self._reveal())
+        menu.addSeparator()
+        menu.addAction("Удалить из списка").triggered.connect(lambda _=False: self.remove_requested.emit(self.sound_id))
+        menu.exec(pos)
+
+    def contextMenuEvent(self, event) -> None:  # noqa: N802
+        self._show_menu(event.globalPos())
+
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
         self.rename_requested.emit(self.sound_id)
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._hover.to(1.0)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._hover.to(0.0)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        color = QColor(self._color)
+        h, t = self._hover.value, self._play.value
+
+        bg = mix(QColor(BG_ROW), QColor(BG_ROW_HOVER), h)
+        bg = mix(bg, color, 0.11 * t)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(bg)
+        p.drawRoundedRect(r, 10, 10)
+
+        if t > 0.01:  # мягкая рамка вокруг играющего звука
+            p.setPen(QPen(with_alpha(color, 0.55 * t), 1.2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(r, 10, 10)
+
+        p.setPen(Qt.PenStyle.NoPen)  # цветная полоска слева
+        p.setBrush(with_alpha(color, 0.35 + 0.65 * max(t, h * 0.4)))
+        p.drawRoundedRect(QRectF(r.left() + 7, r.top() + 14, 3.5, r.height() - 28), 1.75, 1.75)
+
+
+class CategoryButton(QAbstractButton):
+    def __init__(self, key: str, text: str, color: Optional[str] = None, count: int = 0,
+                 grid: bool = False, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.key = key
+        self._text = text
+        self._color = color
+        self._count = count
+        self._grid = grid
+        self.setCheckable(True)
+        self.setFixedHeight(36)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._hover = Fade(self, 120)
+        self._sel = Fade(self, 180)
+        self._hover.changed.connect(self.update)
+        self._sel.changed.connect(self.update)
+
+    def set_count(self, n: int) -> None:
+        self._count = n
+        self.update()
+
+    def set_selected(self, selected: bool, animate: bool = True) -> None:
+        self.setChecked(selected)
+        self._sel.to(1.0 if selected else 0.0, animate)
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._hover.to(1.0)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._hover.to(0.0)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        h, s = self._hover.value, self._sel.value
+        w, ht = self.width(), self.height()
+        bg = mix(with_alpha(QColor(BG_ROW_HOVER), h * (1 - s)), QColor(BG_SELECTED), s)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(bg)
+        p.drawRoundedRect(QRectF(self.rect()), 6, 6)
+
+        fg = mix(QColor(TEXT_MUTED), QColor("white"), max(s, h * 0.7))
+        if self._grid:
+            paint_icon(p, "grid", QRectF(9, ht / 2 - 9, 18, 18), fg)
+        else:
+            p.setBrush(QColor(self._color or TEXT_MUTED))
+            p.drawEllipse(QPointF(18, ht / 2), 5, 5)
+
+        p.setPen(fg)
+        elided = self.fontMetrics().elidedText(self._text, Qt.TextElideMode.ElideRight, w - 36 - 44)
+        p.drawText(QRectF(36, 0, w - 36 - 44, ht), elided, _text_option(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft))
+        p.setPen(with_alpha(fg, 0.7))
+        p.drawText(QRectF(w - 46, 0, 36, ht), str(self._count), _text_option(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight))
+
+
+class Sidebar(QWidget):
+    ALL = "__all__"
+
+    category_selected = Signal(str)
+    add_category_requested = Signal()
+    category_menu_requested = Signal(str, QPoint)
+    settings_requested = Signal()
+    master_changed = Signal(float)
+    monitor_changed = Signal(float)
+    input_changed = Signal(float)
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("sidebar")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.selected = self.ALL
+        self._buttons: dict[str, CategoryButton] = {}
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 16, 12, 12)
+        root.setSpacing(4)
+
+        title = QLabel("KlakerPad")
+        title.setObjectName("appTitle")
+        title.setContentsMargins(6, 0, 0, 0)
+        root.addWidget(title)
+        root.addSpacing(14)
+
+        self._all_btn = CategoryButton(self.ALL, "Все звуки", grid=True)
+        self._all_btn.clicked.connect(lambda: self.select(self.ALL))
+        root.addWidget(self._all_btn)
+        root.addSpacing(10)
+
+        head = QHBoxLayout()
+        label = QLabel("КАТЕГОРИИ")
+        label.setObjectName("sectionLabel")
+        label.setContentsMargins(6, 0, 0, 0)
+        add = make_icon_button("plus", "Новая категория", size=26)
+        add.clicked.connect(lambda: self.add_category_requested.emit())
+        head.addWidget(label)
+        head.addStretch(1)
+        head.addWidget(add)
+        root.addLayout(head)
+
+        self._cat_layout = QVBoxLayout()
+        self._cat_layout.setSpacing(2)
+        root.addLayout(self._cat_layout)
+        root.addStretch(1)
+
+        vol_label = QLabel("ГРОМКОСТЬ")
+        vol_label.setObjectName("sectionLabel")
+        vol_label.setContentsMargins(6, 0, 0, 0)
+        root.addWidget(vol_label)
+        self._sliders: list[QSlider] = []
+        for text, sig, tip in (
+            ("Общая", self.master_changed, "Общая громкость всех звуков"),
+            ("Наушники", self.monitor_changed, "Громкость в ваших наушниках (не влияет на микрофон)"),
+            ("Микрофон", self.input_changed, "Громкость вашего реального микрофона в миксе"),
+        ):
+            row = QHBoxLayout()
+            lab = QLabel(text)
+            lab.setObjectName("muted")
+            lab.setFixedWidth(72)
+            lab.setContentsMargins(6, 0, 0, 0)
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setRange(0, 100)
+            slider.setToolTip(tip)
+            slider.valueChanged.connect(lambda v, s=sig: s.emit(v / 100.0))
+            row.addWidget(lab)
+            row.addWidget(slider, 1)
+            root.addLayout(row)
+            self._sliders.append(slider)
+        root.addSpacing(6)
+
+        settings_btn = QPushButton("  Настройки")
+        settings_btn.setProperty("kind", "ghost")
+        settings_btn.setIcon(icon("sliders", TEXT_MUTED, 18))
+        settings_btn.setIconSize(QSize(18, 18))
+        settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        settings_btn.clicked.connect(lambda: self.settings_requested.emit())
+        root.addWidget(settings_btn)
+
+        self._all_btn.set_selected(True, animate=False)
+
+    def set_volumes(self, master: float, monitor: float, mic: float) -> None:
+        for slider, value in zip(self._sliders, (master, monitor, mic)):
+            slider.blockSignals(True)
+            slider.setValue(int(round(value * 100)))
+            slider.blockSignals(False)
+
+    def set_categories(self, categories: list[Category], counts: dict[str, int], total: int,
+                       select: Optional[str] = None) -> None:
+        if select is not None:
+            self.selected = select
+        if self.selected != self.ALL and self.selected not in {c.name for c in categories}:
+            self.selected = self.ALL
+
+        for btn in self._buttons.values():
+            self._cat_layout.removeWidget(btn)
+            btn.deleteLater()
+        self._buttons.clear()
+
+        self._all_btn.set_count(total)
+        for cat in categories:
+            btn = CategoryButton(cat.name, cat.name, cat.color or auto_color(cat.name), counts.get(cat.name, 0))
+            btn.clicked.connect(lambda _=False, k=cat.name: self.select(k))
+            btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            btn.customContextMenuRequested.connect(
+                lambda pos, b=btn: self.category_menu_requested.emit(b.key, b.mapToGlobal(pos))
+            )
+            self._cat_layout.addWidget(btn)
+            self._buttons[cat.name] = btn
+
+        self.select(self.selected, animate=False)
+
+    def select(self, key: str, animate: bool = True) -> None:
+        self.selected = key
+        self._all_btn.set_selected(key == self.ALL, animate)
+        for name, btn in self._buttons.items():
+            btn.set_selected(name == key, animate)
+        self.category_selected.emit(key)
 
 
 class SettingsDialog(QDialog):
@@ -495,34 +718,25 @@ class SettingsDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Настройки")
-        self.setMinimumWidth(620)
+        self.setMinimumWidth(580)
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 14, 18, 16)
-        root.setSpacing(6)
-
-        def make_form(title: str) -> QFormLayout:
-            box = QGroupBox(title)
-            form = QFormLayout(box)
-            form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-            form.setHorizontalSpacing(14)
-            form.setVerticalSpacing(10)
-            form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-            root.addWidget(box)
-            return form
+        root.setContentsMargins(20, 18, 20, 16)
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(10)
 
         # Монитор
-        monitor_form = make_form("Прослушивание")
-        self.monitor_check = QCheckBox("Слышать звуки самому (наушники/колонки)")
+        self.monitor_check = QCheckBox("Слышать звуки сам (наушники/колонки)")
         self.monitor_check.setChecked(settings.monitor_enabled)
         self.monitor_combo = QComboBox()
         self._fill(self.monitor_combo, outputs, settings.monitor_device)
         self.monitor_check.toggled.connect(self.monitor_combo.setEnabled)
         self.monitor_combo.setEnabled(settings.monitor_enabled)
-        monitor_form.addRow(self.monitor_check)
-        monitor_form.addRow("Устройство:", self.monitor_combo)
+        form.addRow(self.monitor_check)
+        form.addRow("Устройство:", self.monitor_combo)
 
         # Виртуальный микрофон
-        mic_form = make_form("Виртуальный микрофон")
         self.mic_check = QCheckBox("Отправлять звуки в «микрофон» (виртуальный кабель)")
         self.mic_check.setChecked(settings.mic_enabled)
         self.mic_combo = QComboBox()
@@ -533,40 +747,37 @@ class SettingsDialog(QDialog):
         self._fill(self.input_combo, inputs, settings.input_device)
         self.mic_check.toggled.connect(self._sync_enabled)
         self.pass_check.toggled.connect(self._sync_enabled)
-        mic_form.addRow(self.mic_check)
-        mic_form.addRow("Устройство вывода:", self.mic_combo)
-        mic_form.addRow(self.pass_check)
-        mic_form.addRow("Реальный микрофон:", self.input_combo)
+        form.addRow(self.mic_check)
+        form.addRow("Устройство вывода:", self.mic_combo)
+        form.addRow(self.pass_check)
+        form.addRow("Реальный микрофон:", self.input_combo)
         self._sync_enabled()
 
         hint = QLabel(
-            "Чтобы звуки слышали в Discord или играх, установите виртуальный аудиокабель (например, VB-Cable). "
-            "Выберите «CABLE Input» как устройство вывода выше, а в Discord или игре укажите «CABLE Output» "
-            "как микрофон. Включите подмешивание реального микрофона, чтобы вас тоже слышали."
+            "Чтобы звуки слышали в Discord/играх: установите виртуальный аудиокабель (например VB-Cable), "
+            "выберите «CABLE Input» как устройство вывода выше, а в Discord/игре укажите "
+            "«CABLE Output» как микрофон. Включите «подмешивать реальный микрофон», чтобы вас тоже слышали."
         )
-        hint.setObjectName("hintBox")
+        hint.setObjectName("hint")
         hint.setWordWrap(True)
-        mic_form.addRow(hint)
+        form.addRow(hint)
 
         # Поведение
-        behavior_form = make_form("Поведение")
         self.overlap_check = QCheckBox("Разрешить одновременное воспроизведение разных звуков")
         self.overlap_check.setChecked(settings.allow_overlap)
         self.tray_check = QCheckBox("При закрытии окна сворачивать в трей")
         self.tray_check.setChecked(settings.close_to_tray)
         self.stop_hotkey = HotkeyButton(manager, settings.stop_all_hotkey)
-        behavior_form.addRow(self.overlap_check)
-        behavior_form.addRow(self.tray_check)
-        behavior_form.addRow("Хоткей «Остановить все»:", self.stop_hotkey)
+        form.addRow(self.overlap_check)
+        form.addRow(self.tray_check)
+        form.addRow("Хоткей «Остановить все»:", self.stop_hotkey)
+        root.addLayout(form)
+        root.addSpacing(8)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        ok_btn.setText("Сохранить")
-        ok_btn.setObjectName("primary")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setProperty("kind", "primary")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        root.addSpacing(6)
         root.addWidget(buttons)
 
     @staticmethod
