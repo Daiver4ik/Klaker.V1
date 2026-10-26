@@ -1,15 +1,14 @@
-"""Чтение/запись config.json.
-
-- атомарная запись (tmp + os.replace), чтобы конфиг не побился при сбое;
-- валидация и значения по умолчанию для любых «кривых» данных;
-- отложенное сохранение (schedule_save) для частых изменений вроде ползунков;
-- битый конфиг не теряется, а переименовывается в config.json.corrupt-<time>.
+"""
+The "Klaler" project, an analogue of the SoundPad application!
+Author: Daiver4ik
+Description: Copyright protected!
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
@@ -40,6 +39,14 @@ def _opt_str(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and value else None
 
 
+_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _valid_color(value: Any) -> str:
+    """'#rrggbb' или пустая строка (= цвет не задан)."""
+    return value if isinstance(value, str) and _COLOR_RE.match(value) else ""
+
+
 @dataclass
 class SoundItem:
     id: str
@@ -49,6 +56,8 @@ class SoundItem:
     volume: float = 1.0          # 0.0 .. 2.0
     loop: bool = False
     mode: str = "restart"        # restart | overlap | toggle
+    color: str = ""              # "#rrggbb"; пусто = цвет категории / авто
+    category: str = ""           # имя категории; пусто = без категории
 
     @classmethod
     def from_dict(cls, raw: Any) -> Optional["SoundItem"]:
@@ -63,7 +72,21 @@ class SoundItem:
             volume=_clamp(raw.get("volume"), 0.0, 2.0, 1.0),
             loop=bool(raw.get("loop", False)),
             mode=mode if mode in PLAY_MODES else "restart",
+            color=_valid_color(raw.get("color")),
+            category=str(raw.get("category") or ""),
         )
+
+
+@dataclass
+class Category:
+    name: str
+    color: str = ""
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> Optional["Category"]:
+        if not isinstance(raw, dict) or not isinstance(raw.get("name"), str) or not raw["name"].strip():
+            return None
+        return cls(name=raw["name"].strip(), color=_valid_color(raw.get("color")))
 
 
 @dataclass
@@ -104,7 +127,7 @@ class Settings:
         return s
 
 
-_SOUND_EDITABLE = {"name", "hotkey", "volume", "loop", "mode", "path"}
+_SOUND_EDITABLE = {"name", "hotkey", "volume", "loop", "mode", "path", "color", "category"}
 
 
 class ConfigManager:
@@ -112,6 +135,7 @@ class ConfigManager:
         self.path = Path(path)
         self.settings = Settings()
         self.sounds: list[SoundItem] = []
+        self.categories: list[Category] = []
         self._lock = threading.RLock()
         self._timer: Optional[threading.Timer] = None
 
@@ -133,7 +157,7 @@ class ConfigManager:
                     os.replace(self.path, backup)
                 except OSError:
                     pass
-                self.settings, self.sounds = Settings(), []
+                self.settings, self.sounds, self.categories = Settings(), [], []
                 self.save()
                 return
 
@@ -150,11 +174,23 @@ class ConfigManager:
                 sounds.append(sound)
             self.sounds = sounds
 
+            cats: list[Category] = []
+            for item in raw.get("categories", []) if isinstance(raw.get("categories"), list) else []:
+                cat = Category.from_dict(item)
+                if cat and all(c.name.lower() != cat.name.lower() for c in cats):
+                    cats.append(cat)
+            self.categories = cats
+            known = {c.name for c in cats}
+            for s_ in self.sounds:          # ссылки на несуществующие категории сбрасываем
+                if s_.category not in known:
+                    s_.category = ""
+
     def save(self) -> None:
         with self._lock:
             data = {
                 "version": CONFIG_VERSION,
                 "settings": asdict(self.settings),
+                "categories": [asdict(c) for c in self.categories],
                 "sounds": [asdict(s) for s in self.sounds],
             }
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -198,8 +234,11 @@ class ConfigManager:
         with self._lock:
             return next((s for s in self.sounds if s.id == sound_id), None)
 
-    def add_sound(self, path: str, name: Optional[str] = None) -> SoundItem:
-        sound = SoundItem(id=uuid.uuid4().hex, name=name or Path(path).stem, path=str(path))
+    def add_sound(self, path: str, name: Optional[str] = None, category: str = "") -> SoundItem:
+        with self._lock:
+            if category and self.get_category(category) is None:
+                category = ""
+        sound = SoundItem(id=uuid.uuid4().hex, name=name or Path(path).stem, path=str(path), category=category)
         with self._lock:
             self.sounds.append(sound)
         self.schedule_save()
@@ -224,11 +263,70 @@ class ConfigManager:
                     raise AttributeError(f"Нельзя менять поле звука: {key}")
                 if key == "volume":
                     value = _clamp(value, 0.0, 2.0, sound.volume)
+                elif key == "color":
+                    value = _valid_color(value)
+                elif key == "category" and value and self.get_category(value) is None:
+                    value = ""
                 elif key == "mode" and value not in PLAY_MODES:
                     continue
                 setattr(sound, key, value)
         self.schedule_save()
         return sound
+
+    # ----------------------------------------------------------- categories
+    def categories_snapshot(self) -> list[Category]:
+        with self._lock:
+            return list(self.categories)
+
+    def get_category(self, name: str) -> Optional[Category]:
+        with self._lock:
+            return next((c for c in self.categories if c.name == name), None)
+
+    def add_category(self, name: str, color: str = "") -> Optional[Category]:
+        name = name.strip()
+        with self._lock:
+            if not name or any(c.name.lower() == name.lower() for c in self.categories):
+                return None
+            cat = Category(name=name, color=_valid_color(color))
+            self.categories.append(cat)
+        self.schedule_save()
+        return cat
+
+    def rename_category(self, old: str, new: str) -> bool:
+        new = new.strip()
+        with self._lock:
+            cat = self.get_category(old)
+            if cat is None or not new:
+                return False
+            if new.lower() != old.lower() and any(c.name.lower() == new.lower() for c in self.categories):
+                return False
+            cat.name = new
+            for s in self.sounds:
+                if s.category == old:
+                    s.category = new
+        self.schedule_save()
+        return True
+
+    def set_category_color(self, name: str, color: str) -> bool:
+        with self._lock:
+            cat = self.get_category(name)
+            if cat is None:
+                return False
+            cat.color = _valid_color(color)
+        self.schedule_save()
+        return True
+
+    def remove_category(self, name: str) -> bool:
+        with self._lock:
+            before = len(self.categories)
+            self.categories = [c for c in self.categories if c.name != name]
+            for s in self.sounds:
+                if s.category == name:
+                    s.category = ""
+            removed = len(self.categories) != before
+        if removed:
+            self.schedule_save()
+        return removed
 
     # ------------------------------------------------------------- settings
     def update_settings(self, **changes: Any) -> Settings:
