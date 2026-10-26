@@ -1,7 +1,10 @@
-"""Точка входа SoundPad.
-
-Запуск:  python main.py   (из папки soundpad_app)
 """
+The "Klaler" project, an analogue of the SoundPad application!
+Author: Daiver4ik
+Description: Copyright protected!
+"""
+
+
 from __future__ import annotations
 
 import logging
