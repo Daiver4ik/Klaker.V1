@@ -1,20 +1,7 @@
-"""Аудио-движок: декодирование, кэш, микширование и вывод на два устройства сразу.
-
-Схема:
-    файл --decode/resample--> float32 stereo (кэш, LRU)
-                                   |
-                  +----------------+----------------+
-                  v                                 v
-         Output "монитор" (наушники)      Output "микрофон" (виртуальный кабель)
-                                                    ^
-                                   + сквозной звук реального микрофона (опционально)
-
-Каждый Output — отдельный sounddevice.OutputStream со своим списком «курсоров»
-воспроизведения (устройства тактируются независимо, поэтому позиции раздельные).
-Всё общее состояние защищено одним RLock; колбэки пользователю вызываются только
-ПОСЛЕ освобождения блокировки, а в аудио-колбэке нет файлового ввода-вывода.
-
-Движок не зависит от Qt — UI подписывается на on_started / on_stopped / on_error.
+"""
+The "Klaler" project, an analogue of the SoundPad application!
+Author: Daiver4ik
+Description: Copyright protected!
 """
 from __future__ import annotations
 
@@ -406,6 +393,7 @@ class AudioEngine:
         self._plays: dict[int, _Play] = {}
         self._play_ids = itertools.count(1)
         self._cache = _SoundCache()
+        self._peaks: dict[tuple, np.ndarray] = {}
         self._play_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sp-play")
         self._decode_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sp-decode")
 
@@ -598,6 +586,64 @@ class AudioEngine:
     def is_playing(self, sound_id: str) -> bool:
         with self._lock:
             return any(p.sound_id == sound_id for p in self._plays.values())
+
+    # --------------------------------------------- прогресс и волна для UI
+    def get_progress(self, sound_id: str) -> Optional[tuple[float, float]]:
+        """(позиция_сек, длительность_сек) последнего экземпляра звука или None."""
+        with self._lock:
+            for out in (self._monitor, self._mic):
+                if out is None:
+                    continue
+                latest: Optional[_Cursor] = None
+                for cur in out.cursors:
+                    play = self._plays.get(cur.play_id)
+                    if play is not None and play.sound_id == sound_id and (
+                        latest is None or cur.play_id > latest.play_id
+                    ):
+                        latest = cur
+                if latest is not None:
+                    sr = float(self._samplerate)
+                    return latest.pos / sr, latest.data.shape[0] / sr
+        return None
+
+    def request_peaks(self, path: str, buckets: int,
+                      callback: Callable[[Optional[np.ndarray], float], None]) -> None:
+        """Асинхронно считает огибающую для волны.
+
+        callback(peaks, длительность_сек): peaks — float32 массив длины buckets в диапазоне 0..1
+        или None, если файл не прочитался. Вызывается из фонового потока.
+        """
+        self._decode_pool.submit(self._peaks_job, path, buckets, callback)
+
+    def _peaks_job(self, path: str, buckets: int, callback) -> None:
+        try:
+            data = self._cache.get(path, self._samplerate)
+            n = data.shape[0]
+            duration = n / self._samplerate
+            key = (path, n, buckets)
+            peaks = self._peaks.get(key)
+            if peaks is None:
+                step = n // buckets
+                if step > 0:
+                    chunks = data[: step * buckets].reshape(buckets, step, 2)
+                    peaks = np.maximum(chunks.max(axis=(1, 2)), -chunks.min(axis=(1, 2)))
+                elif n > 0:  # очень короткий звук — растягиваем
+                    mono = np.abs(data).max(axis=1)
+                    peaks = np.interp(np.linspace(0, n - 1, buckets), np.arange(n), mono)
+                else:
+                    peaks = np.zeros(buckets)
+                top = float(peaks.max())
+                if top > 0:
+                    peaks = np.sqrt(peaks / top)  # sqrt — тихие участки заметнее
+                peaks = peaks.astype(np.float32)
+                self._peaks[key] = peaks
+            self._emit(callback, peaks, duration)
+        except AudioEngineError as e:
+            log.warning("peaks: %s", e)
+            self._emit(callback, None, 0.0)
+        except Exception:
+            log.exception("peaks failed: %s", path)
+            self._emit(callback, None, 0.0)
 
     # --------------------------------------------- live-изменения играющих звуков
     def set_sound_volume(self, sound_id: str, volume: float) -> None:
