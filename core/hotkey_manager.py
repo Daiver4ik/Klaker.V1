@@ -1,15 +1,7 @@
-"""Глобальные хоткеи (работают, даже когда окно свёрнуто/не в фокусе).
-
-Комбинация хранится строкой: модификаторы в порядке ctrl, alt, shift, cmd, затем клавиша.
-Примеры: "ctrl+alt+1", "f5", "num3", "shift+q".
-
-Особенности:
-- numpad различается с цифровым рядом (num1 != 1) — на Windows через virtual-key код;
-- на Windows состояние модификаторов сверяется с GetAsyncKeyState, поэтому «залипания»
-  после Alt+Tab / Win+L / смены раскладки не ломают хоткеи;
-- автоповтор клавиши не вызывает повторных срабатываний;
-- есть режим записи комбинации (start_recording) для UI;
-- хоткеи не «съедаются»: приложение, в котором вы находитесь, тоже получит нажатие.
+"""
+The "Klaler" project, an analogue of the SoundPad application!
+Author: Daiver4ik
+Description: Copyright protected!
 """
 from __future__ import annotations
 
